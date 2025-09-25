@@ -16,8 +16,9 @@ type packer interface {
 }
 
 type Builder struct {
-	packerMap     map[typePair]*packerMapEntry
-	structPackers []*StructPacker
+	packerMap         map[typePair]*packerMapEntry
+	structPackers     []*StructPacker
+	useFieldResolvers bool
 }
 
 type typePair struct {
@@ -34,6 +35,10 @@ func NewBuilder() *Builder {
 	return &Builder{
 		packerMap: make(map[typePair]*packerMapEntry),
 	}
+}
+
+func (b *Builder) SetUseFieldResolvers(useFieldResolvers bool) {
+	b.useFieldResolvers = useFieldResolvers
 }
 
 func (b *Builder) Finish() error {
@@ -177,16 +182,52 @@ func (b *Builder) MakeStructPacker(values []*ast.InputValueDefinition, typ refle
 	}
 
 	var fields []*structPackerField
+	var fieldMap map[string][]int
+
+	if b.useFieldResolvers {
+		var err error
+		fieldMap, err = buildArgFieldMap(structType)
+		if err != nil {
+			return nil, fmt.Errorf("%s field mapping error: %s", typ, err.Error())
+		}
+	}
+
 	for _, v := range values {
 		name := v.Name.Name
 		fe := &structPackerField{name: name, def: v.Default}
-		fx := func(n string) bool {
-			return strings.EqualFold(stripUnderscore(n), stripUnderscore(name))
-		}
 
-		sf, ok := structType.FieldByNameFunc(fx)
-		if !ok {
-			return nil, fmt.Errorf("%s does not define field %q (hint: missing `args struct { ... }` wrapper for field arguments, or missing field on input struct)", typ, name)
+		var sf reflect.StructField
+		var ok bool
+
+		if b.useFieldResolvers {
+			fieldIndex, exists := fieldMap[name]
+			if !exists {
+				for mapName, mapIndex := range fieldMap {
+					if strings.EqualFold(stripUnderscore(name), stripUnderscore(mapName)) {
+						fieldIndex = mapIndex
+						exists = true
+						break
+					}
+				}
+			}
+
+			if !exists {
+				return nil, fmt.Errorf("%s does not define field %q (hint: missing `args struct { ... }` wrapper for field arguments, or missing field on input struct)", typ, name)
+			}
+
+			sf = structType.FieldByIndex(fieldIndex)
+			fe.index = fieldIndex
+		} else {
+			// Use the original case-insensitive matching logic
+			fx := func(n string) bool {
+				return strings.EqualFold(stripUnderscore(n), stripUnderscore(name))
+			}
+
+			sf, ok = structType.FieldByNameFunc(fx)
+			if !ok {
+				return nil, fmt.Errorf("%s does not define field %q (hint: missing `args struct { ... }` wrapper for field arguments, or missing field on input struct)", typ, name)
+			}
+			fe.index = sf.Index
 		}
 		if sf.PkgPath != "" {
 			return nil, fmt.Errorf("field %q must be exported", sf.Name)
@@ -196,8 +237,6 @@ func (b *Builder) MakeStructPacker(values []*ast.InputValueDefinition, typ refle
 				return nil, fmt.Errorf("field %q must be a non-pointer since the parameter is required", sf.Name)
 			}
 		}
-
-		fe.index = sf.Index
 
 		ft := v.Type
 		if v.Default != nil {
@@ -395,4 +434,64 @@ type NullUnmarshaller interface {
 func isNullable(t reflect.Type) bool {
 	_, ok := reflect.New(t).Interface().(NullUnmarshaller)
 	return ok
+}
+
+// buildArgFieldMap creates a complete mapping of all field resolutions in a single pass.
+func buildArgFieldMap(t reflect.Type) (map[string][]int, error) {
+	if t.Kind() != reflect.Struct {
+		return nil, nil
+	}
+
+	fieldMap := make(map[string][]int)
+	tagFields := make(map[string][]int)
+	nameFieldsByNormalized := make(map[string][]struct {
+		index        []int
+		originalName string
+	})
+
+	var buildMapRecursive func(reflect.Type, []int) error
+	buildMapRecursive = func(structType reflect.Type, indexPrefix []int) error {
+		for i := 0; i < structType.NumField(); i++ {
+			field := structType.Field(i)
+			currentIndex := append(indexPrefix, i)
+
+			if field.Type.Kind() == reflect.Struct && field.Anonymous {
+				if err := buildMapRecursive(field.Type, currentIndex); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if gt, ok := field.Tag.Lookup("graphql"); ok && gt != "" {
+				if _, exists := tagFields[gt]; exists {
+					return fmt.Errorf("multiple fields have a graphql reflect tag %q", gt)
+				}
+				tagFields[gt] = currentIndex
+				fieldMap[gt] = currentIndex
+				continue
+			}
+
+			normalizedName := strings.ToLower(stripUnderscore(field.Name))
+			nameFieldsByNormalized[normalizedName] = append(nameFieldsByNormalized[normalizedName], struct {
+				index        []int
+				originalName string
+			}{currentIndex, field.Name})
+		}
+		return nil
+	}
+
+	if err := buildMapRecursive(t, nil); err != nil {
+		return nil, err
+	}
+
+	for _, fieldInfos := range nameFieldsByNormalized {
+		if len(fieldInfos) > 1 {
+			return nil, fmt.Errorf("ambiguous field %q", fieldInfos[0].originalName)
+		}
+
+		fieldInfo := fieldInfos[0]
+		fieldMap[fieldInfo.originalName] = fieldInfo.index
+	}
+
+	return fieldMap, nil
 }

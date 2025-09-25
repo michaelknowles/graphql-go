@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -5096,4 +5097,117 @@ func Test_fieldFunc(t *testing.T) {
 			`,
 		},
 	})
+}
+
+type taggedArgsResolver struct{}
+
+func (r *taggedArgsResolver) Test(ctx context.Context, args struct {
+	LowerX *string `graphql:"x"`
+	UpperX *string `graphql:"X"`
+},
+) *string {
+	result := ""
+	if args.LowerX != nil {
+		result += *args.LowerX
+	}
+	result += "-"
+	if args.UpperX != nil {
+		result += *args.UpperX
+	}
+	return &result
+}
+
+func TestGraphQLTagInArguments(t *testing.T) {
+	const schema = `
+		type Query {
+			test(x: String, X: String): String
+		}
+	`
+
+	// Should work with UseFieldResolvers enabled
+	_, err := graphql.ParseSchema(schema, &taggedArgsResolver{}, graphql.UseFieldResolvers())
+	if err != nil {
+		t.Fatalf("Expected schema to parse with UseFieldResolvers, got error: %v", err)
+	}
+	t.Log("Schema parsed successfully with UseFieldResolvers! Graphql tag implementation is working.")
+}
+
+func TestGraphQLTagInArgumentsWithoutFlag(t *testing.T) {
+	const schema = `
+		type Query {
+			test(x: String, X: String): String
+		}
+	`
+
+	// Should fail without UseFieldResolvers because we can't differentiate x vs X
+	_, err := graphql.ParseSchema(schema, &taggedArgsResolver{})
+	if err == nil {
+		t.Fatal("Expected schema parsing to fail without UseFieldResolvers, but it succeeded")
+	}
+	t.Logf("Schema correctly failed without UseFieldResolvers: %v", err)
+}
+
+type ambiguousArgsResolver struct{}
+
+// This should fail because both Field1 and Field2 have the same tag
+func (r *ambiguousArgsResolver) Test(ctx context.Context, args struct {
+	Field1 string `graphql:"field"`
+	Field2 string `graphql:"field"`
+},
+) string {
+	return args.Field1
+}
+
+func TestGraphQLTagInArgumentsAmbiguous(t *testing.T) {
+	const schema = `
+		type Query {
+			test(field: String!): String
+		}
+	`
+
+	// Should fail with UseFieldResolvers because of ambiguous tags
+	_, err := graphql.ParseSchema(schema, &ambiguousArgsResolver{}, graphql.UseFieldResolvers())
+	if err == nil {
+		t.Fatal("expected error for ambiguous graphql tags, got nil")
+	}
+
+	if expected := "multiple fields have a graphql reflect tag \"field\""; !strings.Contains(err.Error(), expected) {
+		t.Fatalf("expected error to contain %q, got: %v", expected, err.Error())
+	}
+}
+
+type fallbackArgsResolver struct{}
+
+// Should work: no tag, but field name matches (case-insensitive)
+func (r *fallbackArgsResolver) Test(ctx context.Context, args struct {
+	MyField *string
+},
+) *string {
+	if args.MyField != nil {
+		return args.MyField
+	}
+	empty := ""
+	return &empty
+}
+
+func TestGraphQLTagInArgumentsFallback(t *testing.T) {
+	const schema = `
+		type Query {
+			test(myField: String): String
+		}
+	`
+
+	// Should work with UseFieldResolvers - fallback to case-insensitive matching
+	_, err := graphql.ParseSchema(schema, &fallbackArgsResolver{}, graphql.UseFieldResolvers())
+	if err != nil {
+		t.Fatalf("Expected schema to parse with UseFieldResolvers (fallback), got error: %v", err)
+	}
+	t.Log("Schema parsed successfully with UseFieldResolvers! Field name fallback is working.")
+
+	// Should also work without UseFieldResolvers - original case-insensitive behavior
+	_, err = graphql.ParseSchema(schema, &fallbackArgsResolver{})
+	if err != nil {
+		t.Fatalf("Expected schema to parse without UseFieldResolvers (original logic), got error: %v", err)
+	}
+	t.Log("Schema parsed successfully without UseFieldResolvers! Original logic still works.")
 }
