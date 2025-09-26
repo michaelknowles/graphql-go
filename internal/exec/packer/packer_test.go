@@ -61,13 +61,13 @@ func TestBuildArgFieldMap_BasicCases(t *testing.T) {
 			},
 		},
 		{
-			name: "non-struct type string",
-			input: "",
+			name:     "non-struct type string",
+			input:    "",
 			expected: nil,
 		},
 		{
-			name: "non-struct type int", 
-			input: 42,
+			name:     "non-struct type int",
+			input:    42,
 			expected: nil,
 		},
 		{
@@ -82,8 +82,8 @@ func TestBuildArgFieldMap_BasicCases(t *testing.T) {
 			},
 		},
 		{
-			name: "pointer to struct",
-			input: &struct{ Field string }{},
+			name:     "pointer to struct",
+			input:    &struct{ Field string }{},
 			expected: nil,
 		},
 	}
@@ -94,7 +94,7 @@ func TestBuildArgFieldMap_BasicCases(t *testing.T) {
 			if tt.input == nil {
 				t.Fatal("input cannot be nil")
 			}
-			
+
 			// Handle non-struct types
 			switch v := tt.input.(type) {
 			case string, int:
@@ -104,7 +104,7 @@ func TestBuildArgFieldMap_BasicCases(t *testing.T) {
 			default:
 				inputType = reflect.TypeOf(tt.input)
 			}
-			
+
 			result, err := buildArgFieldMap(inputType)
 
 			if tt.shouldErr {

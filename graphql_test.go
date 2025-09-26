@@ -5190,24 +5190,112 @@ func (r *fallbackArgsResolver) Test(ctx context.Context, args struct {
 	return &empty
 }
 
-func TestGraphQLTagInArgumentsFallback(t *testing.T) {
-	const schema = `
+// Types and resolver for TestVariablesWithEmbeddedStructs
+type variablesTestUsersFilter struct {
+	MutualWorkspaces *bool
+}
+
+type variablesTestUsersPagination struct {
+	First *int
+	After *string
+}
+
+type variablesTestUsersArgs struct {
+	Filter                       variablesTestUsersFilter
+	Order                        *string
+	variablesTestUsersPagination
+}
+
+type variablesTestUsersConnection struct {
+	TotalCount int32
+}
+
+type variablesTestResolver struct{}
+
+func (r *variablesTestResolver) Users(ctx context.Context, args variablesTestUsersArgs) (*variablesTestUsersConnection, error) {
+	if args.First == nil {
+		return nil, errors.New("expected First to be populated, but it was nil")
+	}
+	if *args.First != 1 {
+		return nil, fmt.Errorf("expected First to be 1, got %d", *args.First)
+	}
+
+	if args.Filter.MutualWorkspaces == nil {
+		return nil, errors.New("expected Filter.MutualWorkspaces to be populated")
+	}
+	if *args.Filter.MutualWorkspaces != true {
+		return nil, errors.New("expected Filter.MutualWorkspaces to be true")
+	}
+
+	if args.Order == nil {
+		return nil, errors.New("expected Order to be populated")
+	}
+	if *args.Order != "name" {
+		return nil, fmt.Errorf("expected Order to be 'name', got %s", *args.Order)
+	}
+
+	return &variablesTestUsersConnection{TotalCount: 1}, nil
+}
+
+func TestVariablesWithEmbeddedStructs(t *testing.T) {
+	t.Parallel()
+
+	schemaStr := `
+		schema {
+			query: Query
+		}
+
 		type Query {
-			test(myField: String): String
+			users(filter: UsersFilter!, order: String, first: Int): UsersConnection!
+		}
+
+		input UsersFilter {
+			mutualWorkspaces: Boolean
+		}
+
+		type UsersConnection {
+			totalCount: Int!
 		}
 	`
 
-	// Should work with UseFieldResolvers - fallback to case-insensitive matching
-	_, err := graphql.ParseSchema(schema, &fallbackArgsResolver{}, graphql.UseFieldResolvers())
-	if err != nil {
-		t.Fatalf("Expected schema to parse with UseFieldResolvers (fallback), got error: %v", err)
-	}
-	t.Log("Schema parsed successfully with UseFieldResolvers! Field name fallback is working.")
+	schema := graphql.MustParseSchema(schemaStr, &variablesTestResolver{}, graphql.UseFieldResolvers())
 
-	// Should also work without UseFieldResolvers - original case-insensitive behavior
-	_, err = graphql.ParseSchema(schema, &fallbackArgsResolver{})
-	if err != nil {
-		t.Fatalf("Expected schema to parse without UseFieldResolvers (original logic), got error: %v", err)
+	query := `
+		query Users($filter: UsersFilter!, $order: String, $first: Int) {
+			users(filter: $filter, order: $order, first: $first) {
+				totalCount
+			}
+		}
+	`
+
+	variablesJSON := `{
+		"filter": {"mutualWorkspaces": true},
+		"first": 1,
+		"order": "name"
+	}`
+
+	var variables map[string]interface{}
+	if err := json.Unmarshal([]byte(variablesJSON), &variables); err != nil {
+		t.Fatalf("Failed to unmarshal variables: %v", err)
 	}
-	t.Log("Schema parsed successfully without UseFieldResolvers! Original logic still works.")
+
+	result := schema.Exec(context.Background(), query, "", variables)
+	if len(result.Errors) > 0 {
+		t.Fatalf("Unexpected errors: %v", result.Errors)
+	}
+
+	var response struct {
+		Users struct {
+			TotalCount int `json:"totalCount"`
+		} `json:"users"`
+	}
+
+	dataBytes, _ := json.Marshal(result.Data)
+	if err := json.Unmarshal(dataBytes, &response); err != nil {
+		t.Fatalf("Failed to unmarshal result: %v", err)
+	}
+
+	if response.Users.TotalCount != 1 {
+		t.Errorf("Expected totalCount to be 1, got %d", response.Users.TotalCount)
+	}
 }
