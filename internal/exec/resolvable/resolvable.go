@@ -213,10 +213,12 @@ type resMapEntry struct {
 }
 
 func newBuilder(s *ast.Schema, useFieldResolvers bool) *execBuilder {
+	packerBuilder := packer.NewBuilder()
+	packerBuilder.SetUseFieldResolvers(useFieldResolvers)
 	return &execBuilder{
 		schema:            s,
 		resMap:            make(map[typePair]*resMapEntry),
-		packerBuilder:     packer.NewBuilder(),
+		packerBuilder:     packerBuilder,
 		useFieldResolvers: useFieldResolvers,
 	}
 }
